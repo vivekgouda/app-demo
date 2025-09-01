@@ -35,7 +35,6 @@ jobs:
         working-directory: terraform
         run: terraform init
 
-      # Ensure ECR repo exists before we try to push the image
       - name: Terraform Apply (ECR only)
         working-directory: terraform
         run: terraform apply -target=aws_ecr_repository.app -auto-approve
