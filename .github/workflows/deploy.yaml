@@ -1,0 +1,73 @@
+name: Deploy to ECS Fargate
+
+on:
+  push:
+    branches: [ "main" ]
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    env:
+      AWS_REGION: ${{ secrets.AWS_REGION }}
+      TF_IN_AUTOMATION: "true"
+      TF_CLI_ARGS_apply: "-auto-approve"
+      TF_CLI_ARGS_init: "-upgrade"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+
+      - name: Terraform Init
+        working-directory: terraform
+        run: terraform init
+
+      # Ensure ECR repo exists before we try to push the image
+      - name: Terraform Apply (ECR only)
+        working-directory: terraform
+        run: terraform apply -target=aws_ecr_repository.app -auto-approve
+
+      - name: Get ECR repo URL
+        id: tfout
+        working-directory: terraform
+        run: echo "ECR_URL=$(terraform output -raw ecr_repo_url)" >> $GITHUB_OUTPUT
+
+      - name: Login to Amazon ECR
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build, tag, and push image
+        working-directory: app
+        env:
+          ECR_URL: ${{ steps.tfout.outputs.ECR_URL }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          docker build -t $ECR_URL:$IMAGE_TAG .
+          docker push $ECR_URL:$IMAGE_TAG
+
+      - name: Terraform Apply (deploy service with new image)
+        working-directory: terraform
+        env:
+          TF_VAR_image_url: ${{ steps.tfout.outputs.ECR_URL }}:${{ github.sha }}
+          TF_VAR_aws_region: ${{ env.AWS_REGION }}
+        run: terraform apply -auto-approve
+
+      - name: Output ALB DNS
+        id: alb
+        working-directory: terraform
+        run: echo "ALB_DNS=$(terraform output -raw alb_dns_name)" >> $GITHUB_OUTPUT
+
+      - name: Show Endpoint
+        run: echo "App URL: http://${{ steps.alb.outputs.ALB_DNS }}/"
